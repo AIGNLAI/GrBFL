@@ -1,4 +1,4 @@
-# Trustworthy-Federated-Learning-via-Granular-Ball-Computing
+# A New Perspective on Privacy Protection in Federated Learning with Granular-Ball Computing
 
 pip install scipy==1.10.1
 
