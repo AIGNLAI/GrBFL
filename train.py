@@ -1,84 +1,96 @@
 import torch
-import numpy as np
-from collections import Counter
-from matplotlib import pyplot as plt
-from torch import nn
+import torch.nn as nn
 import torch.optim as optim
+from torch.optim.lr_scheduler import StepLR
+from tqdm import tqdm
+import numpy as np
+import matplotlib.pyplot as plt
 
-def test_model(device, net, test_loader, criterion):
-    net.eval()
-    probs_score = []
-    labels_truth = []
-    loss_sum = 0
-    num_correct = 0
-    for data in test_loader:
-        labels = data.y
-
-        # Ensure data and labels are on the correct device
-        if torch.cuda.is_available():
-            data = data.to(device)
-            labels = labels.to(device)
-        
-        with torch.no_grad():
-            outputs = net(data).squeeze()
-            loss = criterion(outputs, labels)
-            loss_sum += loss.item()
-            
-            preds10_score = torch.softmax(outputs, dim=1)
-            targets = labels.detach().cpu().numpy()
-            preds2 = np.argmax(preds10_score.detach().cpu().numpy(), axis=1)
-
-            probs_score.append(preds2)
-            labels_truth.append(targets)
-            corre = (preds2 == targets).sum()
-            num_correct += corre.item()
-    
-    eval_loss = loss_sum / len(test_loader)
-    eval_acc = num_correct / len(test_loader.dataset)
-    
-    return eval_loss, eval_acc
-
-def fed_train(num_client, dataset, data_loader_fn, model_fn, train_list, test_loader, args):
+def fed_train(num_client, dataset, data_loader_fn, model_fn, train_list, test_loader, args,samplenum):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     global_model = model_fn()
     global_model.to(device)
     criterion = nn.CrossEntropyLoss()
-    global_params = global_model.state_dict()
+    
+    reg_lambda = 1e-3 
 
     for epoch in range(args.epochs):
-        # Train on each client
+        print(f"Epoch {epoch + 1}/{args.epochs}")
+        global_params = global_model.state_dict()
         local_models = []
         for client_idx in range(num_client):
             client_model = model_fn()
-            client_model.to(device)
             client_model.load_state_dict(global_params)
+            client_model.to(device)
             optimizer = optim.SGD(client_model.parameters(), lr=0.01, momentum=0.9)
+            with tqdm(total=10, desc=f"Training Client {client_idx + 1}", unit="epoch") as pbar:
+                for local_epoch in range(10):
+                    epoch_loss = 0.0
+                    epoch_samples = 0
+                    
+                    for data in data_loader_fn[client_idx]:
+                        client_model.train()
+                        if torch.cuda.is_available():
+                            data = data.to(device)
+                        
+                        output = client_model(data).squeeze()
+                        loss = criterion(output, data.y)
+                        
+                        reg_loss = 0
+                        client_dict = client_model.state_dict()
+                        for k in client_dict.keys():
+                            reg_loss += torch.sum(abs(client_dict[k] - global_params[k]))
+                        loss = loss + reg_lambda * reg_loss
+                        
+                        optimizer.zero_grad()
+                        loss.backward()
+                        optimizer.step()
+                        
+                        epoch_loss += loss.item()
+                        epoch_samples += len(data.y)
 
-            for data in data_loader_fn[client_idx]:
-                client_model.train()
-                if torch.cuda.is_available():
-                    data = data.to(device)  # Ensure data is moved to the correct device
-                optimizer.zero_grad()
-                output = client_model(data)
-                loss = criterion(output, data.y)
-                loss.backward()
-                optimizer.step()
-            local_models.append(client_model.state_dict())
+                    avg_loss = epoch_loss / epoch_samples if epoch_samples > 0 else 0.0
+                    pbar.set_postfix({"Avg Loss": avg_loss, "LR": optimizer.param_groups[0]['lr']})
+                    pbar.update(1)
+                eval_loss, eval_acc = test_model(device, client_model, test_loader, criterion)
+                print(f"\nTraining Loss = {eval_loss:.4f}, Traning Accuracy = {eval_acc:.4f}")
+                local_models.append(client_model.state_dict())
 
-        # Aggregate updates
-        global_params = aggregate_parameters(local_models)
-        global_model.load_state_dict(global_params)
+        averaged_params = local_models[0]
+        for k in averaged_params.keys():
+            for i in range(num_client):
+                local_sample_number = samplenum[i]
+                local_model_params = local_models[i]
+                w = local_sample_number / sum(samplenum)
+                if i == 0:
+                    averaged_params[k] = local_model_params[k] * w
+                else:
+                    averaged_params[k] += local_model_params[k] * w
+        global_model.load_state_dict(averaged_params)
 
-        # Evaluate global model
         eval_loss, eval_acc = test_model(device, global_model, test_loader, criterion)
-        print(f"Epoch {epoch+1}: Loss = {eval_loss}, Accuracy = {eval_acc}")
+        print(f"Epoch {epoch + 1}: Loss = {eval_loss:.4f}, Accuracy = {eval_acc:.4f}")
 
-def aggregate_parameters(local_models):
-    global_params = local_models[0]
-    for key in global_params.keys():
-        global_params[key] = global_params[key].float()
-        for model_state in local_models[1:]:
-            global_params[key] += model_state[key].float()
-        global_params[key] /= len(local_models)
-    return global_params
+    print("Training completed.")
 
+
+def test_model(device, model, test_loader, criterion):
+    model.eval()
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
+
+    with torch.no_grad():
+        for data in test_loader:
+            if torch.cuda.is_available():
+                data = data.to(device)
+            output = model(data)
+            loss = criterion(output, data.y)
+            total_loss += loss.item() * len(data.y)
+            preds = output.argmax(dim=1)
+            total_correct += (preds == data.y).sum().item()
+            total_samples += len(data.y)
+
+    avg_loss = total_loss / total_samples
+    accuracy = total_correct / total_samples
+    return avg_loss, accuracy

@@ -1,7 +1,7 @@
 from datamanger import process_data, load_or_process_data,generate_ratio
 from config import get_args
 from train import fed_train
-from nets.GCNnet import GCN_8_plus
+from nets.GCNnet import *
 from torch_geometric.loader import DataLoader
 import numpy as np
 import os
@@ -21,15 +21,12 @@ if __name__ == '__main__':
         file_count = sum(entry.is_file() for entry in entries)
     assert file_count > 0, "Training directory is empty or invalid!"
 
-    # Step 2: Generate sampling ratios and `mp` mapping
-    ratio = generate_ratio(args.num_clients, min_ratio=0.1)
+    samples_per_client = file_count // args.num_clients
+    remainder = file_count % args.num_clients
 
-    # 计算每个客户端分配的样本数
-    samplenum = []
-    for i in range(args.num_clients - 1):
-        samplenum.append(int(ratio[i] * file_count))
-    samplenum.append(file_count - sum(samplenum))
-
+    samplenum = [samples_per_client] * args.num_clients
+    for i in range(remainder):
+        samplenum[i] += 1
 
     presam = [0]
     for i in range(args.num_clients):
@@ -44,10 +41,11 @@ if __name__ == '__main__':
     for i in div:
         for j in range(args.num_clients):
             if idx < presam[j]:
-                mp[idx] = j
+                mp[i] = j
                 break
         idx += 1
     assert all(i in mp for i in range(file_count)), "Mapping `mp` generation failed!"
+
 
     # Step 3: Process data
     train_list = load_or_process_data(train_file, process_data, train_dir, args.num_clients, mp)
@@ -59,6 +57,6 @@ if __name__ == '__main__':
     # Step 4: Start federated training
     fed_train(num_client=args.num_clients, dataset=args.dataset, data_loader_fn=train_loader,
               model_fn=lambda: GCN_8_plus(num_features=8, num_classes=10), 
-              train_list=train_list, test_loader=test_loader, args=args)
+              train_list=train_list, test_loader=test_loader, args=args, samplenum = samplenum)
 
    

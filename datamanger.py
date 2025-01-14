@@ -9,7 +9,6 @@ import dill
 def process_data(data_dir, num_client, mp, is_train=True):
     data_list = [[] for _ in range(num_client)] if is_train else []
     idx = 0
-
     for file_name in tqdm(os.listdir(data_dir), desc=f"Processing {'training' if is_train else 'test'} data"):
         graph_dir = os.path.join(data_dir, file_name)
         if h5py.is_hdf5(graph_dir):
@@ -39,21 +38,8 @@ def load_or_process_data(file_path, process_fn, *args, **kwargs):
         return data
 
 def generate_ratio(num_clients, min_ratio=0.1):
-    """
-    Generate a ratio array ensuring each ratio is above the minimum ratio
-    using a modified Dirichlet distribution.
-
-    Args:
-        num_clients (int): Number of clients
-        min_ratio (float): Minimum ratio for each client (e.g., 0.1 means 10%)
-
-    Returns:
-        np.ndarray: Ratio array summing to 1
-    """
     assert 0 < min_ratio < 1 / num_clients, "min_ratio must be smaller than 1/num_clients."
     while True:
-        # Generate from Dirichlet
-        ratio = np.random.dirichlet(np.ones(num_clients) * 10)  # Use a concentration parameter
-        # Check if all ratios meet the minimum threshold
+        ratio = np.random.dirichlet(np.ones(num_clients) * 10)
         if (ratio >= min_ratio).all():
             return ratio
